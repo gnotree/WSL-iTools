@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+usage() {
+  cat <<USAGE
+Usage: $(basename "$0") [--name LABEL] [--udid UDID]
+
+Captures idevicesyslog only (no diagnostics). Writes to \$HOME/Forestry/<timestamp>/<label>.idevicesyslog.log
+Stop with Ctrl-C to finalize the log.
+USAGE
+}
+
+LABEL=""
+UDID=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --name|-n) LABEL="${2:-}"; shift 2;;
+    --udid|-u) UDID="${2:-}"; shift 2;;
+    --help|-h) usage; exit 0;;
+    *) echo "Unknown arg: $1"; usage; exit 2;;
+  esac
+done
+
+for cmd in idevicesyslog idevicepair date tee; do
+  command -v "$cmd" >/dev/null 2>&1 || { echo "[!] Missing $cmd. Install libimobiledevice."; exit 127; }
+done
+
+# Pairing check (respect optional UDID)
+if [[ -n "$UDID" ]]; then
+  if ! idevicepair -u "$UDID" validate >/dev/null 2>&1; then
+    echo "[!] Device $UDID not paired. Run: idevicepair -u $UDID pair"
+    exit 100
+  fi
+else
+  if ! idevicepair validate >/dev/null 2>&1; then
+    echo "[!] No paired device. Run: idevicepair pair"
+    exit 100
+  fi
+fi
+
+TS="$(date +%Y%m%d_%H%M%S)"
+BASE="${HOME}/Forestry"
+DIR="${BASE}/${TS}"
+mkdir -p "$DIR"
+
+NAME="${LABEL:-$TS}"
+OUT="${DIR}/${NAME}.idevicesyslog.log"
+
+echo "📡 Capturing syslog…"
+echo "    Output: $OUT"
+echo "    Stop with Ctrl-C to finalize."
+
+cleanup() {
+  echo
+  echo "✅ Saved: $OUT"
+}
+trap cleanup EXIT
+
+if [[ -n "$UDID" ]]; then
+  idevicesyslog -u "$UDID" | tee "$OUT"
+else
+  idevicesyslog | tee "$OUT"
+fi
