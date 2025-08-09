@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+need() { command -v "$1" >/dev/null 2>&1 || { echo "Missing: $1"; exit 127; }; }
+need idevicepair
+need idevicecrashreport
+
+ts="$(date +%Y%m%d_%H%M%S)"
+outdir="${HOME}/GNO-DATA/${ts}"
+mkdir -p "${outdir}"
+
+if ! idevicepair validate >/dev/null 2>&1; then
+  echo "Device not paired. Try: idevicepair pair"
+  exit 1
+fi
+
+echo "Collecting crash reports to ${outdir}"
+if idevicecrashreport -h 2>&1 | grep -q -- '-o'; then
+  idevicecrashreport -e -k -o "${outdir}"
+else
+  ( cd "${outdir}" && idevicecrashreport -e -k )
+fi
+echo "Done. Files in: ${outdir}"

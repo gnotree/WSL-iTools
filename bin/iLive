@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'EOT'
+iLive - iOS live syslog capture (idevicesyslog)
+
+Usage:
+  iLive [options]
+
+Options:
+  -v             Verbose (print to screen and save to file)
+  -Xs N          Run for N seconds (e.g., -Xs 10)
+  -Xm N          Run for N minutes (e.g., -Xm 5)
+  -10s | -5m     Shorthand forms: -<N>s or -<N>m
+  -h, --help     Show this help
+
+Default: run until Ctrl+C.
+Logs saved to: ~/GNO-DATA/YYYYMMDD_HHMMSS/idevicesyslog.log
+EOT
+}
+
+need() { command -v "$1" >/dev/null 2>&1 || { echo "Missing: $1"; exit 127; }; }
+need idevicepair
+need idevicesyslog
+need timeout
+
+verbose=false
+duration_sec=""
+
+while (( "$#" )); do
+  case "$1" in
+    -h|--help) usage; exit 0;;
+    -v) verbose=true; shift;;
+    -Xs)
+      [[ $# -ge 2 && "$2" =~ ^[0-9]+$ ]] || { echo "Invalid seconds after -Xs"; exit 2; }
+      duration_sec="$2"; shift 2;;
+    -Xm)
+      [[ $# -ge 2 && "$2" =~ ^[0-9]+$ ]] || { echo "Invalid minutes after -Xm"; exit 2; }
+      duration_sec="$(( $2 * 60 ))"; shift 2;;
+    -[0-9]*s)
+      num="${1#-}"; num="${num%s}"
+      [[ "$num" =~ ^[0-9]+$ ]] || { echo "Invalid seconds: $1"; exit 2; }
+      duration_sec="$num"; shift;;
+    -[0-9]*m)
+      num="${1#-}"; num="${num%m}"
+      [[ "$num" =~ ^[0-9]+$ ]] || { echo "Invalid minutes: $1"; exit 2; }
+      duration_sec="$(( num * 60 ))"; shift;;
+    *)
+      echo "Unknown option: $1"; usage; exit 2;;
+  esac
+done
+
+if ! idevicepair validate >/dev/null 2>&1; then
+  echo "Device not paired. Try: idevicepair pair"
+  exit 1
+fi
+
+ts="$(date +%Y%m%d_%H%M%S)"
+outdir="${HOME}/GNO-DATA/${ts}"
+mkdir -p "${outdir}"
+outfile="${outdir}/idevicesyslog.log"
+
+echo "Writing logs to: ${outfile}"
+echo "Press Ctrl+C to stop (unless a duration was specified)."
+trap 'echo; echo "Saved: ${outfile}"; exit 0' INT
+
+run_cmd=(idevicesyslog)
+
+if [[ -n "$duration_sec" ]]; then
+  if $verbose; then
+    timeout "${duration_sec}" "${run_cmd[@]}" | tee -a "${outfile}"
+  else
+    timeout "${duration_sec}" "${run_cmd[@]}" >> "${outfile}"
+  fi
+else
+  if $verbose; then
+    "${run_cmd[@]}" | tee -a "${outfile}"
+  else
+    "${run_cmd[@]}" >> "${outfile}"
+  fi
+fi
+
+echo "Saved: ${outfile}"

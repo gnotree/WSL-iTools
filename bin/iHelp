@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cat <<'TXT'
+WSL-iTools
+
+Commands:
+  iCopy  - Pull iOS crash/diagnostics to ~/GNO-DATA/<timestamp>
+  iLive  - Live syslog capture (Ctrl+C to stop, or -Xs/-Xm, -10s/-5m)
+  iHelp  - This help
+
+Pair device:
+  idevicepair pair
+  idevicepair validate
+
+usbipd (Windows PowerShell):
+  usbipd wsl list
+  usbipd wsl attach --busid <BUSID>
+TXT
