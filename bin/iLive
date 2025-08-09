@@ -1,38 +1,64 @@
 #!/usr/bin/env bash
-# iLive: collect latest iOS crash/diagnostic artifacts into ~/Forestry/<ts>
-# Options:
-#   -s, --since  DURATION   Only include files newer than now-<duration> (e.g., 30s, 10m, 2h, 3d)
-#   -S, --start  WHEN       Include files newer than this time (date(1) parseable)
-#   -E, --end    WHEN       Exclude files newer than this time
-#       --zip               Also package output dir into .tgz
-#   -v, --verbose           Print moved files
-#   -h, --help
+# iLive: live-capture idevicesyslog to ~/Forestry/<ts>/syslog_<ts>.log
+# Flags:
+#   -v, --verbose          Show logs while recording (tee)
+#   -d, --duration <span>  Auto-stop after span (e.g., 30s, 5m, 2h)
+#       --zip              Zip the log on exit (fallback tar.gz if no zip)
+# Notes:
+#   Ctrl-C always stops & finalizes. "--since" is accepted as alias for duration
+#   for backward compatibility, but not advertised.
+
 set -euo pipefail
 
-usage(){
-  sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
-  exit "${1:-0}"
+need(){ command -v "$1" >/dev/null 2>&1 || { echo "Missing: $1"; exit 127; }; }
+usage(){ cat <<EOF
+Usage: iLive [-v|--verbose] [-d|--duration <span>] [--zip]
+Examples:
+  iLive                    # silent capture until Ctrl-C
+  iLive -v                 # show logs while saving
+  iLive --duration 10m     # run for 10 minutes, then stop
+  iLive -v -d 30s --zip    # show, capture 30s, then zip
+EOF
 }
 
-need(){ command -v "$1" >/dev/null 2>&1 || { echo "Missing: $1"; exit 127; }; }
-need idevicepair
-need idevicecrashreport
-need date
-need find
-need tar
+to_secs(){
+  local s="${1:-}"
+  [[ -z "$s" ]] && { echo ""; return 0; }
+  if [[ "$s" =~ ^[0-9]+$ ]]; then echo "$s"; return 0; fi
+  if [[ "$s" =~ ^([0-9]+)([smhd])$ ]]; then
+    local n="${BASH_REMATCH[1]}" u="${BASH_REMATCH[2]}"
+    case "$u" in s) echo $((n));;
+                  m) echo $((n*60));;
+                  h) echo $((n*3600));;
+                  d) echo $((n*86400));;
+    esac; return 0
+  fi
+  echo "ERR"
+}
 
-since=""; start=""; end=""; make_zip=0; verbose=0
+VERBOSE=0
+DO_ZIP=0
+DURATION=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    -s|--since) since="${2:-}"; shift 2;;
-    -S|--start) start="${2:-}"; shift 2;;
-    -E|--end)   end="${2:-}";   shift 2;;
-    --zip)      make_zip=1; shift;;
-    -v|--verbose) verbose=1; shift;;
-    -h|--help) usage 0;;
-    *) echo "Unknown option: $1"; usage 2;;
+    -h|--help) usage; exit 0;;
+    -v|--verbose) VERBOSE=1; shift;;
+    -d|--duration) shift; DURATION="${1:-}"; shift || true;;
+    --since)      shift; DURATION="${1:-}"; shift || true;; # legacy alias
+    --zip) DO_ZIP=1; shift;;
+    *) echo "Unknown option: $1"; usage; exit 2;;
   esac
 done
+
+if [[ -n "$DURATION" ]]; then
+  SECS="$(to_secs "$DURATION")"
+  [[ "$SECS" == "ERR" ]] && { echo "Invalid duration: $DURATION"; exit 2; }
+else
+  SECS=""
+fi
+
+need idevicepair
+need idevicesyslog
 
 if ! idevicepair validate >/dev/null 2>&1; then
   echo "Device not paired. Try: idevicepair pair"
@@ -42,58 +68,47 @@ fi
 ts="$(date +%Y%m%d_%H%M%S)"
 outdir="${HOME}/Forestry/${ts}"
 mkdir -p "$outdir"
-tmpdir="$(mktemp -d)"
-trap 'rm -rf "$tmpdir"' EXIT
+logfile="${outdir}/syslog_${ts}.log"
 
-echo "Collecting live logs to ${outdir}"
-
-# Use -o if supported, otherwise run in tmpdir CWD.
-if idevicecrashreport -h 2>&1 | grep -q -- ' -o '; then
-  idevicecrashreport -o "$tmpdir" >/dev/null
-else
-  (cd "$tmpdir" && idevicecrashreport . >/dev/null)
-fi
-
-cd "$tmpdir"
-
-# Build find filters
-find_args=(. -type f)
-if [[ -n "$since" ]]; then
-  if [[ "$since" =~ ^([0-9]+)([smhd])$ ]]; then
-    n="${BASH_REMATCH[1]}"; u="${BASH_REMATCH[2]}"
-    case "$u" in
-      s) delta="$n seconds ago" ;;
-      m) delta="$n minutes ago" ;;
-      h) delta="$n hours ago" ;;
-      d) delta="$n days ago" ;;
-    esac
-    start="$(date -d "$delta" '+%Y-%m-%d %H:%M:%S')"
+start_capture(){
+  if [[ "$VERBOSE" -eq 1 ]]; then
+    echo "[iLive] Recording to: $logfile"
+    echo "[iLive] Press Ctrl-C to stop…"
+    set +e; idevicesyslog | tee -a "$logfile" & PID=$!; set -e
   else
-    # Accept strings parseable by date(1)
-    start="$since"
+    set +e; idevicesyslog >> "$logfile" & PID=$!; set -e
   fi
-fi
-[[ -n "$start" ]] && find_args+=(-newermt "$start")
-[[ -n "$end"   ]] && find_args+=(! -newermt "$end")
+}
 
-# Select & move
-mapfile -d '' files < <(find "${find_args[@]}" -print0)
+finalize(){
+  kill "$PID" 2>/dev/null || true
+  wait "$PID" 2>/dev/null || true
+  if [[ "$DO_ZIP" -eq 1 ]]; then
+    base="$(basename "$logfile" .log)"
+    if command -v zip >/dev/null 2>&1; then
+      (cd "$outdir" && zip -q "${base}.zip" "${base}.log") || true
+      [[ "$VERBOSE" -eq 1 ]] && echo "[iLive] Archive: ${outdir}/${base}.zip"
+    else
+      (cd "$outdir" && tar -czf "${base}.tar.gz" "${base}.log") || true
+      [[ "$VERBOSE" -eq 1 ]] && echo "[iLive] Archive: ${outdir}/${base}.tar.gz"
+    fi
+  fi
+  [[ "$VERBOSE" -eq 1 ]] && echo "[iLive] Saved: $logfile"
+  exit 0
+}
 
-count=0
-if ((${#files[@]})); then
-  for f in "${files[@]}"; do
-    rel="${f#./}"
-    dest="${outdir}/${rel}"
-    mkdir -p "$(dirname "$dest")"
-    mv "$f" "$dest"
-    (( verbose )) && echo "Move: ${dest}"
-    ((count++)) || true
-  done
-fi
+trap finalize INT TERM
+start_capture
 
-echo "Done. ${count} file(s) saved to ${outdir}"
-
-if (( make_zip )); then
-  (cd "$(dirname "$outdir")" && tar -czf "$(basename "$outdir").tgz" "$(basename "$outdir")")
-  echo "Packed: ${outdir}.tgz"
+if [[ -n "${SECS}" ]]; then
+  # auto-stop after duration
+  ( sleep "${SECS}"; kill -INT "$PID" 2>/dev/null || true ) &
+  WAITER=$!
+  wait "$PID" 2>/dev/null || true
+  kill "$WAITER" 2>/dev/null || true
+  finalize
+else
+  # wait for Ctrl-C
+  wait "$PID" 2>/dev/null || true
+  finalize
 fi

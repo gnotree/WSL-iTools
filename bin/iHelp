@@ -1,18 +1,22 @@
 #!/usr/bin/env bash
-set -euo pipefail
-cat <<'TXT'
-WSL-iTools
+cat <<'EOF'
+=== Debian 12 iDevice Environment Loaded ===
+Custom iDevice Commands Available:
+  iAttach [BusId]                  Attach iPhone to WSL (usbipd)
+  iHelp                            This help text
+  iDeviceInfo                      Show device info (e.g., iDeviceInfo -k DeviceName)
+  iDeviceSyslog                    Relay syslog (pipeable) (e.g., iDeviceSyslog | grep error)
+  iDevicePair                      Manage pairings (e.g., iDevicePair pair)
+  iDeviceBackup2                   Modern backups (e.g., iDeviceBackup2 backup --no-encrypt ~/ios_backup)
 
-Commands:
-  iCopy  - Pull iOS crash/diagnostics to ~/GNO-DATA/<timestamp>
-  iLive  - Live syslog capture (Ctrl+C to stop, or -Xs/-Xm, -10s/-5m)
-  iHelp  - This help
+  iLive [-v] [-d 10m] [--zip]     Live-capture syslog to ~/Forestry/<ts>/syslog_<ts>.log
+                                  -v shows logs; Ctrl-C to stop; -d/--duration auto-stops.
+  iCopy [-v] [--zip]              Copy ALL .ips + diagnostics to ~/GNO-DATA/<ts>
 
-Pair device:
-  idevicepair pair
-  idevicepair validate
+  s                                Reload this .bashrc
+  ss                               Elevate to root bash
 
-usbipd (Windows PowerShell):
-  usbipd wsl list
-  usbipd wsl attach --busid <BUSID>
-TXT
+Examples:
+  iLive -v --duration 5m --zip
+  iCopy --zip
+EOF

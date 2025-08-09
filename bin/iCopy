@@ -1,33 +1,39 @@
 #!/usr/bin/env bash
-# iCopy: snapshot iOS crash/diagnostic artifacts into ~/GNO-DATA/<ts>
-# Options mirror iLive:
-#   -s/--since DURATION | -S/--start WHEN | -E/--end WHEN | --zip | -v | -h
+# iCopy: copy ALL device .ips & diagnostics to ~/GNO-DATA/<ts>
+# Flags:
+#   -v, --verbose  : show progress lines from idevicecrashreport
+#       --zip      : zip the folder after copy (fallback tar.gz if no zip)
+# Notes:
+#   Any --since provided is ignored (warn once).
+
 set -euo pipefail
 
-usage(){
-  sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
-  exit "${1:-0}"
+need(){ command -v "$1" >/dev/null 2>&1 || { echo "Missing: $1"; exit 127; }; }
+usage(){ cat <<EOF
+Usage: iCopy [-v|--verbose] [--zip]
+Copies ALL existing crash/diagnostic reports from the device into a
+timestamped folder under ~/GNO-DATA and (optionally) compresses it.
+EOF
 }
 
-need(){ command -v "$1" >/dev/null 2>&1 || { echo "Missing: $1"; exit 127; }; }
-need idevicepair
-need idevicecrashreport
-need date
-need find
-need tar
+VERBOSE=0
+DO_ZIP=0
+WARNED=0
 
-since=""; start=""; end=""; make_zip=0; verbose=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    -s|--since) since="${2:-}"; shift 2;;
-    -S|--start) start="${2:-}"; shift 2;;
-    -E|--end)   end="${2:-}";   shift 2;;
-    --zip)      make_zip=1; shift;;
-    -v|--verbose) verbose=1; shift;;
-    -h|--help) usage 0;;
-    *) echo "Unknown option: $1"; usage 2;;
+    -h|--help) usage; exit 0;;
+    -v|--verbose) VERBOSE=1; shift;;
+    --zip) DO_ZIP=1; shift;;
+    --since) # ignore but warn once
+      shift; [[ "$WARNED" -eq 0 ]] && { echo "[iCopy] '--since' is not supported and will be ignored."; WARNED=1; }
+      [[ $# -gt 0 ]] && shift || true;;
+    *) echo "Unknown option: $1"; usage; exit 2;;
   esac
 done
+
+need idevicepair
+need idevicecrashreport
 
 if ! idevicepair validate >/dev/null 2>&1; then
   echo "Device not paired. Try: idevicepair pair"
@@ -36,56 +42,25 @@ fi
 
 ts="$(date +%Y%m%d_%H%M%S)"
 outdir="${HOME}/GNO-DATA/${ts}"
-mkdir -p "$outdir"
-tmpdir="$(mktemp -d)"
-trap 'rm -rf "$tmpdir"' EXIT
+mkdir -p "${outdir}"
 
-echo "Collecting crash reports to ${outdir}"
-
-# Use -o if supported, otherwise run in tmpdir CWD.
-if idevicecrashreport -h 2>&1 | grep -q -- ' -o '; then
-  idevicecrashreport -o "$tmpdir" >/dev/null
+if [[ "$VERBOSE" -eq 1 ]]; then
+  echo "Collecting crash reports to ${outdir}"
+  idevicecrashreport "${outdir}"
 else
-  (cd "$tmpdir" && idevicecrashreport . >/dev/null)
+  # quiet: capture tool output but keep terminal clean, print final line
+  idevicecrashreport "${outdir}" >/tmp/icopy.$$.log 2>&1 || true
+  echo "Saved crash/diagnostic reports to ${outdir}"
 fi
 
-cd "$tmpdir"
-
-# Build find filters
-find_args=(. -type f)
-if [[ -n "$since" ]]; then
-  if [[ "$since" =~ ^([0-9]+)([smhd])$ ]]; then
-    n="${BASH_REMATCH[1]}"; u="${BASH_REMATCH[2]}"
-    case "$u" in
-      s) delta="$n seconds ago" ;;
-      m) delta="$n minutes ago" ;;
-      h) delta="$n hours ago" ;;
-      d) delta="$n days ago" ;;
-    esac
-    start="$(date -d "$delta" '+%Y-%m-%d %H:%M:%S')"
+if [[ "$DO_ZIP" -eq 1 ]]; then
+  base="$(basename "$outdir")"
+  parent="$(dirname "$outdir")"
+  if command -v zip >/dev/null 2>&1; then
+    (cd "$parent" && zip -qr "${base}.zip" "${base}") || true
+    [[ "$VERBOSE" -eq 1 ]] && echo "Archive: ${parent}/${base}.zip"
   else
-    start="$since"
+    (cd "$parent" && tar -czf "${base}.tar.gz" "${base}") || true
+    [[ "$VERBOSE" -eq 1 ]] && echo "Archive: ${parent}/${base}.tar.gz"
   fi
-fi
-[[ -n "$start" ]] && find_args+=(-newermt "$start")
-[[ -n "$end"   ]] && find_args+=(! -newermt "$end")
-
-mapfile -d '' files < <(find "${find_args[@]}" -print0)
-count=0
-if ((${#files[@]})); then
-  for f in "${files[@]}"; do
-    rel="${f#./}"
-    dest="${outdir}/${rel}"
-    mkdir -p "$(dirname "$dest")"
-    mv "$f" "$dest"
-    (( verbose )) && echo "Move: ${dest}"
-    ((count++)) || true
-  done
-fi
-
-echo "Done. ${count} file(s) saved to ${outdir}"
-
-if (( make_zip )); then
-  (cd "$(dirname "$outdir")" && tar -czf "$(basename "$outdir").tgz" "$(basename "$outdir")")
-  echo "Packed: ${outdir}.tgz"
 fi
