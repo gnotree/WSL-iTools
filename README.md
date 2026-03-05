@@ -26,8 +26,8 @@ This repo ships **iSyslog** (and a convenience symlink **iLive**) to capture liv
 ```bash
 # from the repo root
 sudo ./install.sh
-# creates: /usr/local/bin/iSyslog and symlink /usr/local/bin/iLive
-# both are simple bash wrappers around idevicesyslog
+# creates: /usr/local/bin/iSyslog, /usr/local/bin/iCopy, /usr/local/bin/iHelp
+# and symlink /usr/local/bin/iLive
 ```
 
 Open a **new shell** after installing so your `$PATH` picks up the new commands.
